@@ -14,6 +14,7 @@ import { Organization } from './enterprise/database/entities/organization.entity
 import { Workspace } from './enterprise/database/entities/workspace.entity'
 import { LoggedInUser } from './enterprise/Interface.Enterprise'
 import { initializeJwtCookieMiddleware, verifyToken, verifyTokenForBullMQDashboard } from './enterprise/middleware/passport'
+import { checkPermission } from './enterprise/rbac/PermissionCheck'
 import { initAuthSecrets } from './enterprise/utils/authSecrets'
 import { IdentityManager } from './IdentityManager'
 import { MODE, Platform } from './Interface'
@@ -23,7 +24,9 @@ import { Prometheus } from './metrics/Prometheus'
 import errorHandlerMiddleware from './middlewares/errors'
 import { NodesPool } from './NodesPool'
 import { QueueManager } from './queue/QueueManager'
+import { ScheduleBeat } from './schedule/ScheduleBeat'
 import { RedisEventSubscriber } from './queue/RedisEventSubscriber'
+import { initWebhookListenerRegistry } from './services/webhook-listener'
 import flowiseApiV1Router from './routes'
 import { UsageCacheManager } from './UsageCacheManager'
 import { getEncryptionKey, getNodeModulesPackagePath } from './utils'
@@ -33,7 +36,7 @@ import { RateLimiterManager } from './utils/rateLimit'
 import { SSEStreamer } from './utils/SSEStreamer'
 import { Telemetry } from './utils/telemetry'
 import { validateAPIKey } from './utils/validateKey'
-import { getAllowedIframeOrigins, getCorsOptions, sanitizeMiddleware } from './utils/XSS'
+import { getCorsOptions, getIframeSecurityHeaders, sanitizeMiddleware, validateCorsConfig } from './utils/XSS'
 
 declare global {
     namespace Express {
@@ -128,6 +131,7 @@ export class App {
 
             // Initialize SSE Streamer
             this.sseStreamer = new SSEStreamer()
+            this.sseStreamer.startHeartbeat()
             logger.info('🌊 [server]: SSE Streamer initialized successfully')
 
             // Init Queues
@@ -142,14 +146,23 @@ export class App {
                     appDataSource: this.AppDataSource,
                     abortControllerPool: this.abortControllerPool,
                     usageCacheManager: this.usageCacheManager,
+                    identityManager: this.identityManager,
                     serverAdapter
                 })
                 logger.info('✅ [Queue]: All queues setup successfully')
 
                 this.redisSubscriber = new RedisEventSubscriber(this.sseStreamer)
                 await this.redisSubscriber.connect()
+                this.redisSubscriber.startPeriodicCleanup()
                 logger.info('🔗 [server]: Redis event subscriber connected successfully')
             }
+
+            await initWebhookListenerRegistry(this.sseStreamer, this.redisSubscriber)
+            logger.info('📡 [server]: Webhook listener registry initialized successfully')
+
+            // Init ScheduleBeat (works in both queue and non-queue mode)
+            await ScheduleBeat.getInstance().init()
+            logger.info('⏰ [server]: ScheduleBeat initialized successfully')
 
             logger.info('🎉 [server]: All initialization steps completed successfully!')
         } catch (error) {
@@ -160,8 +173,13 @@ export class App {
     async config() {
         // Limit is needed to allow sending/receiving base64 encoded string
         const flowise_file_size_limit = process.env.FLOWISE_FILE_SIZE_LIMIT || '50mb'
-        this.app.use(express.json({ limit: flowise_file_size_limit }))
-        this.app.use(express.urlencoded({ limit: flowise_file_size_limit, extended: true }))
+
+        // Preserve raw bytes before JSON parsing for webhook HMAC signature verification
+        const captureRawBody = (req: Request, _res: Response, buf: Buffer) => {
+            ;(req as any).rawBody = buf
+        }
+        this.app.use(express.json({ limit: flowise_file_size_limit, verify: captureRawBody }))
+        this.app.use(express.urlencoded({ limit: flowise_file_size_limit, extended: true, verify: captureRawBody }))
 
         // Enhanced trust proxy settings for load balancer
         let trustProxy: string | boolean | number | undefined = process.env.TRUST_PROXY
@@ -179,21 +197,19 @@ export class App {
         this.app.set('trust proxy', trustProxy)
 
         // Allow access from specified domains
+        validateCorsConfig()
         this.app.use(cors(getCorsOptions()))
 
         // Parse cookies
         this.app.use(cookieParser())
 
         // Allow embedding from specified domains.
+        const iframeSecurityHeaders = getIframeSecurityHeaders()
         this.app.use((req, res, next) => {
-            const allowedOrigins = getAllowedIframeOrigins()
-            if (allowedOrigins == '*') {
-                next()
-            } else {
-                const csp = `frame-ancestors ${allowedOrigins}`
-                res.setHeader('Content-Security-Policy', csp)
-                next()
+            for (const [headerName, headerValue] of Object.entries(iframeSecurityHeaders)) {
+                res.setHeader(headerName, headerValue)
             }
+            next()
         })
 
         // Switch off the default 'X-Powered-By: Express' header
@@ -204,11 +220,6 @@ export class App {
 
         // Add the sanitizeMiddleware to guard against XSS
         this.app.use(sanitizeMiddleware)
-
-        this.app.use((req, res, next) => {
-            res.header('Access-Control-Allow-Credentials', 'true') // Allow credentials (cookies, etc.)
-            if (next) next()
-        })
 
         const denylistURLs = process.env.DENYLIST_URLS ? process.env.DENYLIST_URLS.split(',') : []
         const whitelistURLs = WHITELIST_URLS.filter((url) => !denylistURLs.includes(url))
@@ -337,7 +348,13 @@ export class App {
             )
 
             const rateLimiter = this.rateLimiterManager.getRateLimiterById(id)
-            this.app.use('/admin/queues', rateLimiter, verifyTokenForBullMQDashboard, this.queueManager.getBullBoardRouter())
+            this.app.use(
+                '/admin/queues',
+                rateLimiter,
+                verifyTokenForBullMQDashboard,
+                checkPermission('admin:queues'),
+                this.queueManager.getBullBoardRouter()
+            )
         }
 
         // ----------------------------------------
@@ -361,6 +378,7 @@ export class App {
 
     async stopApp() {
         try {
+            this.sseStreamer.stopHeartbeat()
             const removePromises: any[] = []
             removePromises.push(this.telemetry.flush())
             if (this.queueManager) {

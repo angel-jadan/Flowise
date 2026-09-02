@@ -38,13 +38,11 @@ import {
     IMessage,
     FlowiseMemory,
     IFileUpload,
-    getS3Config
+    StorageProviderFactory
 } from 'flowise-components'
 import { randomBytes } from 'crypto'
 import { AES, enc } from 'crypto-js'
-import multer from 'multer'
-import multerS3 from 'multer-s3'
-import MulterGoogleCloudStorage from 'multer-cloud-storage'
+
 import { ChatFlow } from '../database/entities/ChatFlow'
 import { ChatMessage } from '../database/entities/ChatMessage'
 import { Credential } from '../database/entities/Credential'
@@ -56,6 +54,7 @@ import { CachePool } from '../CachePool'
 import { Variable } from '../database/entities/Variable'
 import { DocumentStore } from '../database/entities/DocumentStore'
 import { DocumentStoreFileChunk } from '../database/entities/DocumentStoreFileChunk'
+import { CustomMcpServer } from '../database/entities/CustomMcpServer'
 import { InternalFlowiseError } from '../errors/internalFlowiseError'
 import { StatusCodes } from 'http-status-codes'
 import {
@@ -102,7 +101,8 @@ export const databaseEntities: IDatabaseEntity = {
     Assistant: Assistant,
     Variable: Variable,
     DocumentStore: DocumentStore,
-    DocumentStoreFileChunk: DocumentStoreFileChunk
+    DocumentStoreFileChunk: DocumentStoreFileChunk,
+    CustomMcpServer: CustomMcpServer
 }
 
 /**
@@ -568,10 +568,11 @@ export const buildFlow = async ({
 
     const flowData: ICommonObject = {
         chatflowid,
+        chatflowId: chatflowid,
         chatId,
         sessionId,
         chatHistory,
-        ...overrideConfig
+        apiMessageId
     }
     while (nodeQueue.length) {
         const { nodeId, depth } = nodeQueue.shift() as INodeQueue
@@ -1769,6 +1770,17 @@ export const transformToCredentialEntity = async (body: ICredentialReqBody): Pro
  * @param {IComponentCredentials} componentCredentials
  * @returns {ICredentialDataDecrypted}
  */
+const maskUrlPassword = (value: string): string | null => {
+    try {
+        const url = new URL(value)
+        if (!url.password) return null
+        url.password = 'FLOWISE_MASKED'
+        return url.toString().replace('FLOWISE_MASKED', '\u2022\u2022\u2022\u2022\u2022\u2022')
+    } catch {
+        return null
+    }
+}
+
 export const redactCredentialWithPasswordType = (
     componentCredentialName: string,
     decryptedCredentialObj: ICredentialDataDecrypted,
@@ -1776,8 +1788,16 @@ export const redactCredentialWithPasswordType = (
 ): ICredentialDataDecrypted => {
     const plainDataObj = cloneDeep(decryptedCredentialObj)
     for (const cred in plainDataObj) {
-        const inputParam = componentCredentials[componentCredentialName].inputs?.find((inp) => inp.type === 'password' && inp.name === cred)
-        if (inputParam) {
+        const inputs = componentCredentials[componentCredentialName].inputs
+        const inputParam = inputs?.find((inp) => inp.name === cred && (inp.type === 'password' || inp.type === 'url'))
+        if (!inputParam) continue
+        if (inputParam.type === 'url') {
+            const maskedUrl = typeof plainDataObj[cred] === 'string' ? maskUrlPassword(plainDataObj[cred]) : null
+            // Only redact if there was actually a password to mask; otherwise keep URL as-is
+            if (maskedUrl !== null) {
+                plainDataObj[cred] = maskedUrl
+            }
+        } else {
             plainDataObj[cred] = REDACTED_CREDENTIAL_VALUE
         }
     }
@@ -1809,16 +1829,25 @@ export const getMemorySessionId = (
     if (!isInternal) {
         // Provided in API body - incomingInput.overrideConfig: { sessionId: 'abc' }
         if (incomingInput.overrideConfig?.sessionId) {
-            return incomingInput.overrideConfig?.sessionId
+            if (typeof incomingInput.overrideConfig.sessionId !== 'string') {
+                throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, 'Invalid sessionId: must be a string')
+            }
+            return incomingInput.overrideConfig.sessionId
         }
         // Provided in API body - incomingInput.chatId
         if (incomingInput.chatId) {
+            if (typeof incomingInput.chatId !== 'string') {
+                throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, 'Invalid chatId: must be a string')
+            }
             return incomingInput.chatId
         }
     }
 
     // Hard-coded sessionId in UI
     if (memoryNode && memoryNode.data.inputs?.sessionId) {
+        if (typeof memoryNode.data.inputs.sessionId !== 'string') {
+            throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, 'Invalid sessionId: must be a string')
+        }
         return memoryNode.data.inputs.sessionId
     }
 
@@ -1997,38 +2026,8 @@ export function generateId() {
 }
 
 export const getMulterStorage = () => {
-    const storageType = process.env.STORAGE_TYPE ? process.env.STORAGE_TYPE : 'local'
-
-    if (storageType === 's3') {
-        const s3Client = getS3Config().s3Client
-        const Bucket = getS3Config().Bucket
-
-        const upload = multer({
-            storage: multerS3({
-                s3: s3Client,
-                bucket: Bucket,
-                metadata: function (req, file, cb) {
-                    cb(null, { fieldName: file.fieldname, originalName: file.originalname })
-                },
-                key: function (req, file, cb) {
-                    cb(null, `${generateId()}`)
-                }
-            })
-        })
-        return upload
-    } else if (storageType === 'gcs') {
-        return multer({
-            storage: new MulterGoogleCloudStorage({
-                projectId: process.env.GOOGLE_CLOUD_STORAGE_PROJ_ID,
-                bucket: process.env.GOOGLE_CLOUD_STORAGE_BUCKET_NAME,
-                keyFilename: process.env.GOOGLE_CLOUD_STORAGE_CREDENTIAL,
-                uniformBucketLevelAccess: Boolean(process.env.GOOGLE_CLOUD_UNIFORM_BUCKET_ACCESS) ?? true,
-                destination: `uploads/${generateId()}`
-            })
-        })
-    } else {
-        return multer({ dest: getUploadPath() })
-    }
+    const provider = StorageProviderFactory.getProvider()
+    return provider.getMulterStorage()
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { z } from 'zod'
+import { z } from 'zod/v3'
 
 // material-ui
 import { Alert, Box, Button, Divider, Icon, List, ListItemText, OutlinedInput, Stack, Typography, useTheme } from '@mui/material'
@@ -188,7 +188,7 @@ const RegisterPage = () => {
                     `Error in registering user. Please contact your administrator. (${registerApi.error?.response?.data?.message})`
                 )
             } else if (isCloud) {
-                setAuthError(`Error in registering user. Please try again.`)
+                setAuthError(registerApi.error?.response?.data?.message || 'Error in registering user. Please try again.')
             }
             setLoading(false)
         }

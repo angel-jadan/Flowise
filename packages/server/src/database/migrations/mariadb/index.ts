@@ -42,6 +42,12 @@ import { AddTextToSpeechToChatFlow1759419231100 } from './1759419231100-AddTextT
 import { AddChatFlowNameIndex1759424809984 } from './1759424809984-AddChatFlowNameIndex'
 import { FixDocumentStoreFileChunkLongText1765000000000 } from './1765000000000-FixDocumentStoreFileChunkLongText'
 import { AddApiKeyPermission1765360298674 } from './1765360298674-AddApiKeyPermission'
+import { AddReasonContentToChatMessage1764759496768 } from './1764759496768-AddReasonContentToChatMessage'
+import { AddCustomMcpServer1766000000000 } from './1766000000000-AddCustomMcpServer'
+import { AddWebhookSecretToChatFlow1776240000003 } from './1776240000003-AddWebhookSecretToChatFlow'
+import { AddMcpServerConfigToChatFlow1767000000000 } from './1767000000000-AddMcpServerConfigToChatFlow'
+import { AddScheduleEntities1772000000000 } from './1772000000000-AddScheduleEntities'
+import { AddSSOIdentityBinding1780000000000 } from '../../../enterprise/database/migrations/mariadb/1780000000000-AddSSOIdentityBinding'
 
 import { AddAuthTables1720230151482 } from '../../../enterprise/database/migrations/mariadb/1720230151482-AddAuthTables'
 import { AddWorkspace1725437498242 } from '../../../enterprise/database/migrations/mariadb/1725437498242-AddWorkspace'
@@ -110,5 +116,11 @@ export const mariadbMigrations = [
     AddTextToSpeechToChatFlow1759419231100,
     AddChatFlowNameIndex1759424809984,
     FixDocumentStoreFileChunkLongText1765000000000,
-    AddApiKeyPermission1765360298674
+    AddApiKeyPermission1765360298674,
+    AddReasonContentToChatMessage1764759496768,
+    AddCustomMcpServer1766000000000,
+    AddWebhookSecretToChatFlow1776240000003,
+    AddMcpServerConfigToChatFlow1767000000000,
+    AddScheduleEntities1772000000000,
+    AddSSOIdentityBinding1780000000000
 ]

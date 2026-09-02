@@ -30,15 +30,30 @@ const generateTextToSpeech = async (req: Request, res: Response) => {
         let provider: string, credentialId: string, voice: string, model: string
 
         if (chatflowId) {
-            const workspaceId = req.user?.activeWorkspaceId
+            let workspaceId = req.user?.activeWorkspaceId
+            let chatflow: Awaited<ReturnType<typeof chatflowsService.getChatflowById>>
+
+            if (workspaceId) {
+                chatflow = await chatflowsService.getChatflowById(chatflowId, workspaceId)
+            } else {
+                // Fallback: get workspaceId from chatflow when req.user.activeWorkspaceId is not set (from whitelist API)
+                chatflow = await chatflowsService.getChatflowById(chatflowId)
+                if (!chatflow.isPublic) {
+                    throw new InternalFlowiseError(
+                        StatusCodes.UNAUTHORIZED,
+                        `Error: textToSpeechController.generateTextToSpeech - unauthorized access to non-public chatflow!`
+                    )
+                }
+                workspaceId = chatflow.workspaceId
+            }
+
             if (!workspaceId) {
                 throw new InternalFlowiseError(
                     StatusCodes.NOT_FOUND,
-                    `Error: textToSpeechController.generateTextToSpeech - workspace ${workspaceId} not found!`
+                    `Error: textToSpeechController.generateTextToSpeech - workspace not found!`
                 )
             }
             // Get TTS config from chatflow
-            const chatflow = await chatflowsService.getChatflowById(chatflowId, workspaceId)
             const ttsConfig = JSON.parse(chatflow.textToSpeech)
 
             // Find the provider with status: true
@@ -80,8 +95,6 @@ const generateTextToSpeech = async (req: Request, res: Response) => {
         res.setHeader('Content-Type', 'text/event-stream')
         res.setHeader('Cache-Control', 'no-cache')
         res.setHeader('Connection', 'keep-alive')
-        res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Headers', 'Cache-Control')
 
         const appServer = getRunningExpressApp()
         const options = {
@@ -192,13 +205,6 @@ const abortTextToSpeech = async (req: Request, res: Response) => {
         const ttsAbortId = `tts_${chatId}_${chatMessageId}`
         appServer.abortControllerPool.abort(ttsAbortId)
 
-        // Also abort the main chat flow AbortController for auto-TTS
-        const chatFlowAbortId = `${chatflowId}_${chatId}`
-        if (appServer.abortControllerPool.get(chatFlowAbortId)) {
-            appServer.abortControllerPool.abort(chatFlowAbortId)
-            appServer.sseStreamer.streamMetadataEvent(chatId, { chatId, chatMessageId })
-        }
-
         // Send abort event to client
         appServer.sseStreamer.streamTTSAbortEvent(chatId, chatMessageId)
 
@@ -218,7 +224,15 @@ const getVoices = async (req: Request, res: Response, next: NextFunction) => {
             throw new InternalFlowiseError(StatusCodes.BAD_REQUEST, `Error: textToSpeechController.getVoices - provider not provided!`)
         }
 
-        const voices = await textToSpeechService.getVoices(provider as any, credentialId as string)
+        const workspaceId = req.user?.activeWorkspaceId
+        if (!workspaceId) {
+            throw new InternalFlowiseError(
+                StatusCodes.NOT_FOUND,
+                `Error: textToSpeechController.getVoices - workspace ${workspaceId} not found!`
+            )
+        }
+
+        const voices = await textToSpeechService.getVoices(provider as any, credentialId as string, workspaceId)
 
         return res.json(voices)
     } catch (error) {

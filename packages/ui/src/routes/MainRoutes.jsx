@@ -4,8 +4,8 @@ import { lazy } from 'react'
 import MainLayout from '@/layout/MainLayout'
 import Loadable from '@/ui-component/loading/Loadable'
 
-import { RequireAuth } from '@/routes/RequireAuth'
 import { DefaultRedirect } from '@/routes/DefaultRedirect'
+import { RequireAuth } from '@/routes/RequireAuth'
 
 // chatflows routing
 const Chatflows = Loadable(lazy(() => import('@/views/chatflows')))
@@ -53,7 +53,7 @@ const Evaluators = Loadable(lazy(() => import('@/views/evaluators')))
 const Account = Loadable(lazy(() => import('@/views/account')))
 
 // files routing
-const Files = Loadable(lazy(() => import('@/views/files')))
+// const Files = Loadable(lazy(() => import('@/views/files')))
 
 // logs routing
 const Logs = Loadable(lazy(() => import('@/views/serverlogs')))
@@ -280,14 +280,14 @@ const MainRoutes = {
                 </RequireAuth>
             )
         },
-        {
-            path: '/files',
-            element: (
-                <RequireAuth display={'feat:files'}>
-                    <Files />
-                </RequireAuth>
-            )
-        },
+        // {
+        //     path: '/files',
+        //     element: (
+        //         <RequireAuth display={'feat:files'}>
+        //             <Files />
+        //         </RequireAuth>
+        //     )
+        // },
         {
             path: '/account',
             element: <Account />
